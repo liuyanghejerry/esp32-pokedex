@@ -1,0 +1,20 @@
+[package]
+name = "pokedex-firmware"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+esp-hal = { version = "1.2.2", features = ["esp32c3", "rt"] }
+esp-backtrace = { version = "0.20.0", features = [
+    "esp32c3",
+    "panic-handler",
+    "println",
+] }
+esp-println = { version = "0.18.0", default-features = false, features = ["esp32c3", "jtag-serial"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
+embedded-hal = "1.0"
+embedded-graphics = "0.8.2"
+heapless = { version = "0.9", default-features = false }
+nb = "1.0"
+pokedex-core = { path = "../core" }
+

@@ -1,0 +1,5 @@
+target/
+build/
+firmware/assets/
+ai-passport/
+.DS_Store
