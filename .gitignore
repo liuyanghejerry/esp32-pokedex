@@ -4,3 +4,4 @@ firmware/assets/
 ai-passport/
 tools/fonts/
 .DS_Store
+tools/__pycache__/
