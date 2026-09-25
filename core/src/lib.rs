@@ -11,6 +11,8 @@
 #[macro_use]
 extern crate std;
 
+pub mod audio;
+
 /// Physical buttons sharing the ADC ladder on GPIO0.
 /// Windows (mV) come from ai-passport `bsp_pins.h`:
 /// UP {0,150}, DOWN {150,447}, OK {447,1900}, released ~3300.

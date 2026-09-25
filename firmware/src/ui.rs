@@ -20,7 +20,7 @@ use crate::st7789::{FrameBuffer, HEIGHT, WIDTH};
 
 /// 8-bit RGB -> RGB565 (Rgb565::new only masks, it does not scale; feed it
 /// pre-reduced 5/6/5 channel values).
-const fn c8(r: u8, g: u8, b: u8) -> Rgb565 {
+pub const fn c8(r: u8, g: u8, b: u8) -> Rgb565 {
     Rgb565::new(r >> 3, g >> 2, b >> 3)
 }
 
@@ -56,11 +56,11 @@ const STAT_LABELS: [&str; 6] = ["HP", "攻击", "防御", "特攻", "特防", "�
 const FLAVOR_UNITS: usize = 44;
 const FLAVOR_LINES: usize = 6;
 
-fn fill_rect(fb: &mut FrameBuffer, x: i32, y: i32, w: u32, h: u32, color: Rgb565) {
-    Rectangle::new(Point::new(x, y), Size::new(w, h))
-        .into_styled(PrimitiveStyle::with_fill(color))
-        .draw(fb)
-        .ok();
+/// Rectangle fill. Goes straight to `FrameBuffer::fill_rect` rather than a
+/// styled `Rectangle`: the draw-target iterator costs ~30 cycles per pixel,
+/// which is the difference between a 15 ms and a 2 ms full-screen fill.
+pub(crate) fn fill_rect(fb: &mut FrameBuffer, x: i32, y: i32, w: u32, h: u32, color: Rgb565) {
+    fb.fill_rect(x, y, w, h, color);
 }
 
 fn card_at(fb: &mut FrameBuffer, x: i32, y: i32, w: u32, h: u32) {

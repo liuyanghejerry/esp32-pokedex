@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-esp-hal = { version = "1.2.2", features = ["esp32c3", "rt"] }
+# `unstable` is required for the I2S/DMA streaming API (`I2sTx::write` plus
+# the `dma_buffers!` helpers), which the audio path is built on.
+esp-hal = { version = "1.2.2", features = ["esp32c3", "rt", "unstable"] }
 esp-backtrace = { version = "0.20.0", features = [
     "esp32c3",
     "panic-handler",

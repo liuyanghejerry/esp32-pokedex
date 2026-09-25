@@ -46,6 +46,35 @@ impl FrameBuffer {
         }
     }
 
+    /// Fill an axis-aligned rectangle.
+    ///
+    /// This is the hot path of every screen (a full-screen fill is 76 800
+    /// pixels), so it writes whole rows directly instead of going through the
+    /// draw-target iterator one pixel at a time — several times faster, and it
+    /// clips negative or oversized rectangles.
+    pub fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, c: Rgb565) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let x0 = x.max(0) as usize;
+        let y0 = y.max(0) as usize;
+        let x1 = ((x.max(0) as u32).saturating_add(w) as usize).min(WIDTH);
+        let y1 = ((y.max(0) as u32).saturating_add(h) as usize).min(HEIGHT);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let raw = RawU16::from(c).into_inner();
+        let (hi, lo) = ((raw >> 8) as u8, raw as u8);
+        for row in y0..y1 {
+            let start = (row * WIDTH + x0) * 2;
+            let end = (row * WIDTH + x1) * 2;
+            for px in self.buf[start..end].chunks_exact_mut(2) {
+                px[0] = hi;
+                px[1] = lo;
+            }
+        }
+    }
+
     #[inline]
     pub fn set(&mut self, x: u32, y: u32, c: Rgb565) {
         if x >= WIDTH as u32 || y >= HEIGHT as u32 {
@@ -150,7 +179,11 @@ where
     }
 
     /// Push one full frame to GRAM (full-window RAMWR burst).
-    pub fn push_frame(&mut self, fb: &FrameBuffer) {
+    ///
+    /// `keep_alive` runs between SPI chunks: a frame is ~31 ms of wire time at
+    /// 40 MHz, which is long enough to starve anything the caller services
+    /// from its main loop — in this firmware, the DMA-fed audio ring.
+    pub fn push_frame(&mut self, fb: &FrameBuffer, keep_alive: &mut dyn FnMut()) {
         self.cmd_data(0x2A, &[0x00, 0x00, 0x00, (WIDTH - 1) as u8]); // CASET
         self.cmd_data(0x2B, &[0x00, 0x00, ((HEIGHT - 1) >> 8) as u8, ((HEIGHT - 1) & 0xFF) as u8]); // RASET
         self.cmd(0x2C); // RAMWR
@@ -158,6 +191,41 @@ where
         let _ = self.cs.set_low();
         for chunk in fb.buf.chunks(4096) {
             let _ = self.spi.write(chunk);
+            keep_alive();
+        }
+        let _ = self.spi.flush();
+        let _ = self.cs.set_high();
+    }
+
+    /// Push just the `w`x`h` window at (`x`,`y`) — everything that is animating
+    /// costs its own area instead of a full 153 KB frame. The controller wraps
+    /// from the window's last column to the next row on its own, so the rows
+    /// are simply fed one after another.
+    pub fn push_rect(
+        &mut self,
+        fb: &FrameBuffer,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        keep_alive: &mut dyn FnMut(),
+    ) {
+        if w == 0 || h == 0 || x + w > WIDTH || y + h > HEIGHT {
+            return;
+        }
+        let (x0, x1) = (x as u16, (x + w - 1) as u16);
+        let (y0, y1) = (y as u16, (y + h - 1) as u16);
+        self.cmd_data(0x2A, &[(x0 >> 8) as u8, x0 as u8, (x1 >> 8) as u8, x1 as u8]); // CASET
+        self.cmd_data(0x2B, &[(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8]); // RASET
+        self.cmd(0x2C); // RAMWR
+        let _ = self.dc.set_high();
+        let _ = self.cs.set_low();
+        for row in y..y + h {
+            let start = (row * WIDTH + x) * 2;
+            for chunk in fb.buf[start..start + w * 2].chunks(2048) {
+                let _ = self.spi.write(chunk);
+            }
+            keep_alive();
         }
         let _ = self.spi.flush();
         let _ = self.cs.set_high();
