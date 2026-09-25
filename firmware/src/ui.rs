@@ -1,51 +1,60 @@
-//! Pokedex UI — original card-style design, drawn with embedded-graphics.
+//! Pokedex UI — 中文卡片式设计（官方简体中文译名，点阵字库渲染）。
 //!
-//! Two pages: a sprite "card" (name, category, type badges, height/weight)
-//! and a "detail" page (base-stat bars + FireRed flavor text). UP/DOWN
-//! switch species, OK toggles the page.
+//! 两页：卡片页（名字/分类/属性/身高体重）与详情页（种族值 + 图鉴说明）。
+//! 上/下切换宝可梦（保持当前页），OK 切换页面。
 
 use embedded_graphics::{
-    mono_font::{ascii as font, MonoFont, MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::Rgb565,
     prelude::*,
     primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
-    text::{Baseline, Text, TextStyleBuilder},
 };
 
-use pokedex_core::{stat_bar_len, type_name, type_rgb, wrap_text, DexModel, Page, TYPE_NONE};
+use pokedex_core::{
+    stat_bar_len, type_dark_text, type_name_zh, type_rgb, wrap_zh, DexModel, Page, TYPE_NONE,
+};
 
 use crate::dex_data::{DexEntry, DEX, DEX_LEN};
+use crate::font_zh;
 use crate::sprites::Sprite;
 use crate::st7789::{FrameBuffer, HEIGHT, WIDTH};
 
-const BG: Rgb565 = Rgb565::new(0x10, 0x16, 0x2B);
-const HEADER_RED: Rgb565 = Rgb565::new(0xE3, 0x35, 0x0D);
-const HEADER_RED_DARK: Rgb565 = Rgb565::new(0xB0, 0x28, 0x0A);
-const STRIP: Rgb565 = Rgb565::new(0x0B, 0x10, 0x20);
-const CARD_BORDER: Rgb565 = Rgb565::new(0x26, 0x30, 0x4F);
-const WHITE: Rgb565 = Rgb565::new(0xFF, 0xFF, 0xFF);
-const SUB: Rgb565 = Rgb565::new(0x9A, 0xA5, 0xC0);
-const DIM: Rgb565 = Rgb565::new(0x8A, 0x93, 0xAD);
-const DIVIDER: Rgb565 = Rgb565::new(0x2A, 0x33, 0x52);
-const BAR_BG: Rgb565 = Rgb565::new(0x23, 0x2C, 0x48);
-const PANEL: Rgb565 = Rgb565::new(0x1A, 0x23, 0x40);
-const LENS: Rgb565 = Rgb565::new(0x12, 0x31, 0x5C);
-const FLAVOR: Rgb565 = Rgb565::new(0xC7, 0xCE, 0xE0);
+/// 8-bit RGB -> RGB565 (Rgb565::new only masks, it does not scale; feed it
+/// pre-reduced 5/6/5 channel values).
+const fn c8(r: u8, g: u8, b: u8) -> Rgb565 {
+    Rgb565::new(r >> 3, g >> 2, b >> 3)
+}
+
+const BG: Rgb565 = c8(0x10, 0x16, 0x2B);
+const HEADER_RED: Rgb565 = c8(0xE3, 0x35, 0x0D);
+const HEADER_RED_DARK: Rgb565 = c8(0xB0, 0x28, 0x0A);
+const STRIP: Rgb565 = c8(0x0B, 0x10, 0x20);
+const CARD_BORDER: Rgb565 = c8(0x26, 0x30, 0x4F);
+const WHITE: Rgb565 = c8(0xFF, 0xFF, 0xFF);
+const SUB: Rgb565 = c8(0x9A, 0xA5, 0xC0);
+const DIM: Rgb565 = c8(0x8A, 0x93, 0xAD);
+const DIVIDER: Rgb565 = c8(0x2A, 0x33, 0x52);
+const BAR_BG: Rgb565 = c8(0x23, 0x2C, 0x48);
+const PANEL: Rgb565 = c8(0x1A, 0x23, 0x40);
+const LENS: Rgb565 = c8(0x12, 0x31, 0x5C);
+const FLAVOR: Rgb565 = c8(0xC7, 0xCE, 0xE0);
+/// Materialize flash color for the entrance animation (dark shadow on the
+/// white card) and dark text on light type badges.
+const INK: Rgb565 = c8(0x1A, 0x23, 0x40);
 
 const STAT_COLORS: [Rgb565; 6] = [
-    Rgb565::new(0x78, 0xC8, 0x50), // HP  green
-    Rgb565::new(0xF0, 0x80, 0x30), // ATK orange
-    Rgb565::new(0xF8, 0xD0, 0x30), // DEF yellow
-    Rgb565::new(0x68, 0x90, 0xF0), // SPA blue
-    Rgb565::new(0x98, 0xD8, 0xD8), // SPD cyan
-    Rgb565::new(0xF8, 0x58, 0x88), // SPE pink
+    c8(0x78, 0xC8, 0x50), // 体力 green
+    c8(0xF0, 0x80, 0x30), // 攻击 orange
+    c8(0xF8, 0xD0, 0x30), // 防御 yellow
+    c8(0x68, 0x90, 0xF0), // 特攻 blue
+    c8(0x98, 0xD8, 0xD8), // 特防 cyan
+    c8(0xF8, 0x58, 0x88), // 速度 pink
 ];
 
-/// Materialize flash color for the entrance animation (dark shadow on the
-/// white card).
-const SILHOUETTE: Rgb565 = Rgb565::new(0x1A, 0x23, 0x40);
+const STAT_LABELS: [&str; 6] = ["HP", "攻击", "防御", "特攻", "特防", "速度"];
 
-const STAT_LABELS: [&str; 6] = ["HP", "ATK", "DEF", "SPA", "SPD", "SPE"];
+/// Flavor text: x=6, 220px wide => 44 halfwidth units (5px each) per line.
+const FLAVOR_UNITS: usize = 44;
+const FLAVOR_LINES: usize = 6;
 
 fn fill_rect(fb: &mut FrameBuffer, x: i32, y: i32, w: u32, h: u32, color: Rgb565) {
     Rectangle::new(Point::new(x, y), Size::new(w, h))
@@ -94,36 +103,6 @@ fn draw_sprite(
     }
 }
 
-fn text_top(fb: &mut FrameBuffer, s: &str, x: i32, y: i32, style: MonoTextStyle<'static, Rgb565>) {
-    Text::with_text_style(
-        s,
-        Point::new(x, y),
-        style,
-        TextStyleBuilder::new().baseline(Baseline::Top).build(),
-    )
-    .draw(fb)
-    .ok();
-}
-
-fn text_centered(
-    fb: &mut FrameBuffer,
-    s: &str,
-    y: i32,
-    char_w: i32,
-    style: MonoTextStyle<'static, Rgb565>,
-) {
-    let x = (WIDTH as i32 - s.len() as i32 * char_w) / 2;
-    text_top(fb, s, x, y, style);
-}
-
-fn white_on(f: &'static MonoFont<'static>) -> MonoTextStyle<'static, Rgb565> {
-    MonoTextStyleBuilder::new().font(f).text_color(WHITE).build()
-}
-
-fn colored(f: &'static MonoFont<'static>, color: Rgb565) -> MonoTextStyle<'static, Rgb565> {
-    MonoTextStyleBuilder::new().font(f).text_color(color).build()
-}
-
 fn render_header(fb: &mut FrameBuffer, no: usize) {
     fill_rect(fb, 0, 0, WIDTH as u32, 30, HEADER_RED);
     Line::new(Point::new(0, 29), Point::new(WIDTH as i32 - 1, 29))
@@ -143,24 +122,17 @@ fn render_header(fb: &mut FrameBuffer, no: usize) {
         .draw(fb)
         .ok();
 
-    text_top(fb, "POKeDEX", 34, 5, white_on(&font::FONT_10X20));
+    font_zh::draw_text(fb, "宝可梦图鉴", 34, 3, WHITE, 2);
 
     let mut num = heapless::String::<12>::new();
     if core::fmt::Write::write_fmt(&mut num, format_args!("{:03}/{}", no, DEX_LEN)).is_ok() {
-        let x = WIDTH as i32 - num.len() as i32 * 8 - 8;
-        text_top(fb, &num, x, 9, white_on(&font::FONT_8X13_BOLD));
+        font_zh::draw_right(fb, &num, WIDTH as i32 - 8, 9, WHITE, 1);
     }
 }
 
 fn render_hint_bar(fb: &mut FrameBuffer) {
     fill_rect(fb, 0, HEIGHT as i32 - 16, WIDTH as u32, 16, STRIP);
-    text_centered(
-        fb,
-        "UP/DN: SWITCH   OK: INFO",
-        HEIGHT as i32 - 14,
-        6,
-        colored(&font::FONT_6X12, DIM),
-    );
+    font_zh::draw_centered(fb, "上/下：切换  确：详情", HEIGHT as i32 - 14, DIM, 1);
 }
 
 fn pill_row(fb: &mut FrameBuffer, e: &DexEntry, cx: i32, y: i32, h: u32, pad: i32, gap: i32) {
@@ -170,21 +142,16 @@ fn pill_row(fb: &mut FrameBuffer, e: &DexEntry, cx: i32, y: i32, h: u32, pad: i3
     }
     let count = if e.types[1] == TYPE_NONE { 1 } else { 2 };
     let widths: [i32; 2] = [
-        6 * type_name(ids[0]).len() as i32 + 2 * pad,
-        6 * type_name(ids[1]).len() as i32 + 2 * pad,
+        font_zh::width(type_name_zh(ids[0]), 1) + 2 * pad,
+        font_zh::width(type_name_zh(ids[1]), 1) + 2 * pad,
     ];
     let total: i32 = widths[..count].iter().sum::<i32>() + gap * (count as i32 - 1);
     let mut x = cx - total / 2;
     for i in 0..count {
         let (r, g, b) = type_rgb(ids[i]);
-        fill_rect(fb, x, y, widths[i] as u32, h, Rgb565::new(r, g, b));
-        text_top(
-            fb,
-            type_name(ids[i]),
-            x + pad,
-            y + ((h as i32 - 12) / 2 + 1),
-            white_on(&font::FONT_6X12),
-        );
+        fill_rect(fb, x, y, widths[i] as u32, h, c8(r, g, b));
+        let text_color = if type_dark_text(ids[i]) { INK } else { WHITE };
+        font_zh::draw_vcentered(fb, type_name_zh(ids[i]), x + pad, y, h as i32, text_color, 1);
         x += widths[i] + gap;
     }
 }
@@ -200,17 +167,13 @@ fn render_card(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, si
         56,
         48 + sprite_dy,
         2,
-        silhouette.then_some(SILHOUETTE),
+        silhouette.then_some(INK),
     );
 
-    text_centered(fb, e.name, 198, 10, white_on(&font::FONT_10X20));
+    font_zh::draw_centered(fb, e.name, 192, WHITE, 2);
+    font_zh::draw_centered(fb, e.category, 220, SUB, 1);
 
-    let mut cat = heapless::String::<24>::new();
-    if core::fmt::Write::write_fmt(&mut cat, format_args!("{} POKEMON", e.category)).is_ok() {
-        text_centered(fb, &cat, 222, 6, colored(&font::FONT_6X12, SUB));
-    }
-
-    pill_row(fb, e, WIDTH as i32 / 2, 240, 22, 8, 8);
+    pill_row(fb, e, WIDTH as i32 / 2, 240, 20, 6, 8);
 
     let (hm, hd) = (e.height_dm as u32 / 10, e.height_dm as u32 % 10);
     let (wm, wd) = (e.weight_hg as u32 / 10, e.weight_hg as u32 % 10);
@@ -219,15 +182,39 @@ fn render_card(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, si
     let _ = core::fmt::Write::write_fmt(&mut ht, format_args!("{}.{}m", hm, hd));
     let _ = core::fmt::Write::write_fmt(&mut wt, format_args!("{}.{}kg", wm, wd));
 
-    for (x, label, value) in [(28i32, "HT", &ht), (124i32, "WT", &wt)] {
-        fill_rect(fb, x, 272, 88, 26, PANEL);
-        let total = 2 * 6 + 6 + value.len() as i32 * 8;
+    for (x, label, value) in [(28i32, "身高", &ht), (124i32, "体重", &wt)] {
+        fill_rect(fb, x, 268, 88, 24, PANEL);
+        let total = font_zh::width(label, 1) + 6 + font_zh::width(value, 1);
         let vx = x + (88 - total) / 2;
-        text_top(fb, label, vx, 279, colored(&font::FONT_6X12, SUB));
-        text_top(fb, value, vx + 18, 277, white_on(&font::FONT_8X13_BOLD));
+        font_zh::draw_vcentered(fb, label, vx, 268, 24, SUB, 1);
+        font_zh::draw_vcentered(fb, value, vx + font_zh::width(label, 1) + 6, 268, 24, WHITE, 1);
     }
 
     render_hint_bar(fb);
+}
+
+fn render_flavor(fb: &mut FrameBuffer, e: &DexEntry) {
+    let lines = wrap_zh(e.desc, FLAVOR_UNITS);
+    let shown = lines.len().min(FLAVOR_LINES);
+    for i in 0..shown {
+        let y = 220 + i as i32 * font_zh::LINE_H;
+        if i == FLAVOR_LINES - 1 && lines.len() > FLAVOR_LINES {
+            let mut buf = heapless::String::<96>::new();
+            let mut units = 0usize;
+            for ch in lines[i].chars() {
+                let cu = if ch.is_ascii() { 1 } else { 2 };
+                if units + cu + 2 > FLAVOR_UNITS {
+                    break;
+                }
+                let _ = buf.push(ch);
+                units += cu;
+            }
+            let _ = buf.push('…');
+            font_zh::draw_text(fb, &buf, 6, y, FLAVOR, 1);
+        } else {
+            font_zh::draw_text(fb, lines[i], 6, y, FLAVOR, 1);
+        }
+    }
 }
 
 fn render_detail(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, silhouette: bool) {
@@ -241,22 +228,23 @@ fn render_detail(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, 
         14,
         40 + sprite_dy,
         1,
-        silhouette.then_some(SILHOUETTE),
+        silhouette.then_some(INK),
     );
 
-    text_top(fb, e.name, 92, 42, white_on(&font::FONT_8X13_BOLD));
-    text_top(fb, e.category, 92, 58, colored(&font::FONT_6X12, SUB));
+    font_zh::draw_text(fb, e.name, 92, 38, WHITE, 2);
+    font_zh::draw_text(fb, e.category, 92, 64, SUB, 1);
 
-    let mut y = 74;
+    let mut y = 80;
     for &id in e.types.iter() {
         if id == TYPE_NONE {
             continue;
         }
         let (r, g, b) = type_rgb(id);
-        let w = 6 * type_name(id).len() as i32 + 12;
-        fill_rect(fb, 92, y, w as u32, 16, Rgb565::new(r, g, b));
-        text_top(fb, type_name(id), 98, y + 2, white_on(&font::FONT_6X12));
-        y += 20;
+        let w = font_zh::width(type_name_zh(id), 1) + 10;
+        fill_rect(fb, 92, y, w as u32, 14, c8(r, g, b));
+        let text_color = if type_dark_text(id) { INK } else { WHITE };
+        font_zh::draw_vcentered(fb, type_name_zh(id), 97, y, 14, text_color, 1);
+        y += 18;
     }
 
     Line::new(Point::new(12, 118), Point::new(228, 118))
@@ -265,27 +253,21 @@ fn render_detail(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, 
         .ok();
 
     for (i, (&label, &v)) in STAT_LABELS.iter().zip(e.base.iter()).enumerate() {
-        let y = 126 + i as i32 * 18;
-        text_top(fb, label, 12, y + 1, colored(&font::FONT_6X12, SUB));
+        let y = 122 + i as i32 * 15;
+        font_zh::draw_text(fb, label, 12, y, SUB, 1);
         let mut val = heapless::String::<4>::new();
         let _ = core::fmt::Write::write_fmt(&mut val, format_args!("{}", v));
-        text_top(fb, &val, 56 - val.len() as i32 * 8, y - 1, white_on(&font::FONT_8X13_BOLD));
-        fill_rect(fb, 64, y, 164, 8, BAR_BG);
-        fill_rect(fb, 64, y, stat_bar_len(v, 164) as u32, 8, STAT_COLORS[i]);
+        font_zh::draw_right(fb, &val, 56, y, WHITE, 1);
+        fill_rect(fb, 64, y + 2, 164, 6, BAR_BG);
+        fill_rect(fb, 64, y + 2, stat_bar_len(v, 164) as u32, 6, STAT_COLORS[i]);
     }
 
-    Line::new(Point::new(12, 240), Point::new(228, 240))
+    Line::new(Point::new(12, 214), Point::new(228, 214))
         .into_styled(PrimitiveStyle::with_stroke(DIVIDER, 1))
         .draw(fb)
         .ok();
 
-    let lines = wrap_text(e.desc, 36);
-    for (i, line) in lines.iter().enumerate() {
-        if i >= 5 {
-            break;
-        }
-        text_top(fb, line, 12, 248 + i as i32 * 12, colored(&font::FONT_6X12, FLAVOR));
-    }
+    render_flavor(fb, e);
 
     render_hint_bar(fb);
 }

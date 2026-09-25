@@ -2,4 +2,5 @@ target/
 build/
 firmware/assets/
 ai-passport/
+tools/fonts/
 .DS_Store

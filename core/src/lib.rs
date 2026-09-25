@@ -217,33 +217,113 @@ pub fn type_name(id: u8) -> &'static str {
     }
 }
 
-/// Badge color (24-bit RGB) for a type id.
+/// Badge color (24-bit RGB) for a type id — the modern official palette
+/// used by current games (Fire red, Electric yellow, ...).
 pub fn type_rgb(id: u8) -> (u8, u8, u8) {
     match id {
-        0 => (168, 168, 120),
-        1 => (192, 48, 40),
-        2 => (168, 144, 240),
-        3 => (160, 64, 160),
-        4 => (224, 192, 104),
-        5 => (184, 160, 56),
-        6 => (168, 184, 32),
-        7 => (112, 88, 152),
-        8 => (184, 184, 208),
-        9 => (104, 160, 144),
-        10 => (240, 128, 48),
-        11 => (104, 144, 240),
-        12 => (120, 200, 80),
-        13 => (248, 208, 48),
-        14 => (248, 88, 136),
-        15 => (152, 216, 216),
-        16 => (112, 56, 248),
-        17 => (112, 88, 72),
+        0 => (159, 161, 159),  // NORMAL
+        1 => (255, 128, 0),    // FIGHTING
+        2 => (129, 185, 239),  // FLYING
+        3 => (145, 65, 203),   // POISON
+        4 => (145, 81, 33),    // GROUND
+        5 => (175, 169, 129),  // ROCK
+        6 => (145, 161, 25),   // BUG
+        7 => (112, 65, 112),   // GHOST
+        8 => (96, 161, 184),   // STEEL
+        9 => (104, 160, 144),  // MYSTERY
+        10 => (230, 40, 41),   // FIRE
+        11 => (41, 128, 239),  // WATER
+        12 => (63, 161, 41),   // GRASS
+        13 => (250, 192, 0),   // ELECTRIC
+        14 => (239, 65, 121),  // PSYCHIC
+        15 => (61, 206, 243),  // ICE
+        16 => (80, 96, 225),   // DRAGON
+        17 => (98, 77, 78),    // DARK
         _ => (120, 120, 120),
     }
 }
 
+/// True when a type badge background is light enough to need dark text
+/// (perceived luminance > 165).
+pub fn type_dark_text(id: u8) -> bool {
+    let (r, g, b) = type_rgb(id);
+    let lum = (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000;
+    lum > 165
+}
+
 /// Longest flavor line count we ever expect to need room for.
 pub const MAX_WRAP_LINES: usize = 12;
+
+/// Chinese display name for a type id (official localization).
+pub fn type_name_zh(id: u8) -> &'static str {
+    match id {
+        0 => "一般",
+        1 => "格斗",
+        2 => "飞行",
+        3 => "毒",
+        4 => "地面",
+        5 => "岩石",
+        6 => "虫",
+        7 => "幽灵",
+        8 => "钢",
+        9 => "未知",
+        10 => "火",
+        11 => "水",
+        12 => "草",
+        13 => "电",
+        14 => "超能力",
+        15 => "冰",
+        16 => "龙",
+        17 => "恶",
+        _ => "???",
+    }
+}
+
+/// Line-start-forbidden punctuation for CJK wrapping (closing marks).
+const ZH_NO_START: &str = "，。、！？；：）】》」』…·—～％%";
+
+/// Display width of one char in halfwidth units: ASCII = 1, else 2.
+fn zh_units(c: char) -> usize {
+    if c.is_ascii() {
+        1
+    } else {
+        2
+    }
+}
+
+/// Total display width of a string in halfwidth units.
+pub fn zh_width(text: &str) -> usize {
+    text.chars().map(zh_units).sum()
+}
+
+/// Wrap CJK text to `max_units` halfwidth units per line, breaking between
+/// any two characters (standard CJK behaviour), but never starting a line
+/// with closing punctuation — such a mark is pulled back onto the previous
+/// line even if that line then slightly overflows.
+pub fn wrap_zh(text: &str, max_units: usize) -> heapless::Vec<&str, MAX_WRAP_LINES> {
+    let mut lines = heapless::Vec::new();
+    let mut start = 0usize;
+    let mut units = 0usize;
+    for (i, ch) in text.char_indices() {
+        let ch_units = zh_units(ch);
+        if units + ch_units > max_units && i > start {
+            let (end, carry) = if ZH_NO_START.contains(ch) {
+                (i + ch.len_utf8(), 0)
+            } else {
+                (i, ch_units)
+            };
+            let _ = lines.push(&text[start..end]);
+            start = end;
+            units = carry;
+        } else {
+            units += ch_units;
+        }
+    }
+    if start < text.len() {
+        let _ = lines.push(&text[start..]);
+    }
+    lines
+}
 
 /// Greedy word wrap: splits `text` into lines of at most `max_chars`
 /// characters, breaking at spaces. A word longer than `max_chars` is
@@ -430,6 +510,16 @@ mod tests {
     }
 
     #[test]
+    fn badge_text_contrast_matches_background() {
+        // light backgrounds get dark text, dark ones white
+        assert!(type_dark_text(13), "electric yellow needs dark text");
+        assert!(type_dark_text(15), "ice cyan needs dark text");
+        assert!(!type_dark_text(10), "fire red keeps white text");
+        assert!(!type_dark_text(11), "water blue keeps white text");
+        assert!(!type_dark_text(17), "dark keeps white text");
+    }
+
+    #[test]
     fn wrap_splits_at_spaces() {
         let lines = wrap_text("There is a plant seed on its back right", 12);
         assert_eq!(lines.len(), 4);
@@ -461,5 +551,50 @@ mod tests {
         assert_eq!(stat_bar_len(1, 100), 1);
         assert_eq!(stat_bar_len(255, 100), 100);
         assert!(stat_bar_len(100, 100) > stat_bar_len(50, 100));
+    }
+
+    #[test]
+    fn zh_type_names_cover_all_ids() {
+        for id in 0u8..=17 {
+            assert!(!type_name_zh(id).starts_with("???"), "id {id}");
+        }
+        assert_eq!(type_name_zh(TYPE_NONE), "???");
+    }
+
+    #[test]
+    fn zh_width_counts_halfwidth_units() {
+        assert_eq!(zh_width("妙蛙种子"), 8);
+        assert_eq!(zh_width("0.7m"), 4);
+        assert_eq!(zh_width("妙蛙0.7m"), 8);
+    }
+
+    #[test]
+    fn wrap_zh_breaks_by_units() {
+        let lines = wrap_zh("妙蛙种子背上种着种子", 8);
+        assert_eq!(lines.len(), 3);
+        for l in lines.iter() {
+            assert!(zh_width(l) <= 8, "line too wide: {l:?}");
+        }
+        assert_eq!(lines[0], "妙蛙种子");
+        assert_eq!(lines[1], "背上种着");
+    }
+
+    #[test]
+    fn wrap_zh_never_starts_line_with_closing_punct() {
+        // 。 would be the overflowing char; the rule pulls it back onto
+        // line 1 even though that line then exceeds the limit.
+        let lines = wrap_zh("种子慢慢长大。测试", 12);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "种子慢慢长大。");
+        assert_eq!(lines[1], "测试");
+    }
+
+    #[test]
+    fn wrap_zh_mixed_ascii() {
+        let lines = wrap_zh("身高0.7m体重6.9kg", 8);
+        assert_eq!(lines[0], "身高0.7m");
+        for l in lines.iter() {
+            assert!(zh_width(l) <= 8 + 2, "overflow beyond one punct: {l:?}");
+        }
     }
 }

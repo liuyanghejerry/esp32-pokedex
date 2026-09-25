@@ -28,6 +28,8 @@ use esp_hal::{
 use pokedex_core::{Action, ButtonEvent, Debouncer, DexModel, Page};
 
 mod dex_data;
+mod font_zh;
+mod font_zh_data;
 mod sprites;
 mod st7789;
 mod ui;
