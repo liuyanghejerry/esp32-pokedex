@@ -126,6 +126,17 @@ pub enum Page {
     Detail,
 }
 
+/// What `DexModel::handle` did with an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Nothing changed (e.g. auto-repeat of OK).
+    None,
+    /// Switched to a neighbouring species (page is kept).
+    Navigate,
+    /// Toggled between card and detail page.
+    TogglePage,
+}
+
 /// Navigation state over `count` entries (1-based dex numbers).
 #[derive(Debug)]
 pub struct DexModel {
@@ -153,27 +164,27 @@ impl DexModel {
         self.page
     }
 
-    /// Apply one button event. Returns true when the view must be redrawn.
-    pub fn handle(&mut self, ev: ButtonEvent) -> bool {
+    /// Apply one button event. UP/DOWN move to the neighbouring species and
+    /// keep the current page (so the detail view browses stat pages
+    /// directly); OK toggles the page.
+    pub fn handle(&mut self, ev: ButtonEvent) -> Action {
         match ev {
             ButtonEvent::Press(Button::Up) | ButtonEvent::Repeat(Button::Up) => {
                 self.index = (self.index + self.count - 1) % self.count;
-                self.page = Page::Card;
-                true
+                Action::Navigate
             }
             ButtonEvent::Press(Button::Down) | ButtonEvent::Repeat(Button::Down) => {
                 self.index = (self.index + 1) % self.count;
-                self.page = Page::Card;
-                true
+                Action::Navigate
             }
             ButtonEvent::Press(Button::Ok) => {
                 self.page = match self.page {
                     Page::Card => Page::Detail,
                     Page::Detail => Page::Card,
                 };
-                true
+                Action::TogglePage
             }
-            ButtonEvent::Repeat(Button::Ok) => false,
+            ButtonEvent::Repeat(Button::Ok) => Action::None,
         }
     }
 }
@@ -377,25 +388,35 @@ mod tests {
         let mut m = DexModel::new(3, 1);
         assert_eq!(m.no(), 1);
         assert_eq!(m.page(), Page::Card);
-        assert!(m.handle(ButtonEvent::Press(Button::Down)));
+        assert!(m.handle(ButtonEvent::Press(Button::Down)) != Action::None);
         assert_eq!(m.no(), 2);
-        assert!(m.handle(ButtonEvent::Press(Button::Down)));
+        m.handle(ButtonEvent::Press(Button::Down));
         assert_eq!(m.no(), 3);
-        assert!(m.handle(ButtonEvent::Press(Button::Down)));
+        m.handle(ButtonEvent::Press(Button::Down));
         assert_eq!(m.no(), 1, "must wrap to first");
-        assert!(m.handle(ButtonEvent::Press(Button::Up)));
+        m.handle(ButtonEvent::Press(Button::Up));
         assert_eq!(m.no(), 3, "must wrap backwards");
     }
 
     #[test]
-    fn model_toggles_page_and_resets_on_nav() {
+    fn model_keeps_page_when_navigating() {
         let mut m = DexModel::new(10, 5);
-        assert!(m.handle(ButtonEvent::Press(Button::Ok)));
+        assert_eq!(m.handle(ButtonEvent::Press(Button::Ok)), Action::TogglePage);
         assert_eq!(m.page(), Page::Detail);
-        assert!(!m.handle(ButtonEvent::Repeat(Button::Ok)));
-        assert!(m.handle(ButtonEvent::Press(Button::Down)));
-        assert_eq!(m.page(), Page::Card, "navigating returns to card page");
+        assert_eq!(m.handle(ButtonEvent::Repeat(Button::Ok)), Action::None);
+        assert_eq!(
+            m.handle(ButtonEvent::Press(Button::Down)),
+            Action::Navigate
+        );
+        assert_eq!(
+            m.page(),
+            Page::Detail,
+            "navigating from detail stays on detail"
+        );
         assert_eq!(m.no(), 6);
+        assert_eq!(m.handle(ButtonEvent::Press(Button::Up)), Action::Navigate);
+        assert_eq!(m.no(), 5);
+        assert_eq!(m.page(), Page::Detail);
     }
 
     #[test]

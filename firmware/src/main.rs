@@ -25,7 +25,7 @@ use esp_hal::{
     time::Rate,
 };
 
-use pokedex_core::{Debouncer, DexModel};
+use pokedex_core::{Action, ButtonEvent, Debouncer, DexModel, Page};
 
 mod dex_data;
 mod sprites;
@@ -44,9 +44,39 @@ const BACKLIGHT_TIMEOUT_MS: u32 = 120_000;
 /// full-frame push (~30 ms) and leaves signal-integrity margin.
 const LCD_SPI_HZ: Rate = Rate::from_mhz(40);
 
+/// Classic "sent out of the pokéball" entrance for the new species: two
+/// frames as a dark silhouette (the materialize flash), then a damped
+/// up/down wobble that settles into place. Each frame is a full re-render
+/// + push (~35 ms), ~9 frames ≈ 320 ms total.
+fn animate_entrance<SPI, CS, DC>(
+    lcd: &mut St7789<SPI, CS, DC>,
+    fb: &mut FrameBuffer,
+    model: &DexModel,
+) where
+    SPI: embedded_hal::spi::SpiBus<u8>,
+    CS: embedded_hal::digital::OutputPin,
+    DC: embedded_hal::digital::OutputPin,
+{
+    let page = model.page();
+    let amp: i32 = match page {
+        Page::Card => 8,
+        Page::Detail => 4,
+    };
+    let e = &dex_data::DEX[model.no() - 1];
+    let no = model.no();
+
+    // silhouette flash (materialize), then damped wobble
+    const WOBBLE: &[i32] = &[-2, 0, 1, 0, -1, 0, 0];
+    for (i, &w) in [0, 0].iter().chain(WOBBLE.iter()).enumerate() {
+        let silhouette = i < 2;
+        let dy = w * amp / 2;
+        ui::render_anim(fb, e, no, dy, silhouette, page);
+        lcd.push_frame(fb);
+    }
+}
+
 #[esp_hal::main]
-fn main() -> ! {
-    esp_println::println!("pokedex: boot");
+fn main() -> ! {    esp_println::println!("pokedex: boot");
 
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     let mut delay = Delay::new();
@@ -107,9 +137,18 @@ fn main() -> ! {
                 bl.set_high();
                 backlight_on = true;
             }
-            if model.handle(ev) {
-                ui::render(fb, &model);
-                lcd.push_frame(fb);
+            let fresh_press = matches!(ev, ButtonEvent::Press(_));
+            match model.handle(ev) {
+                // A fresh tap gets the entrance animation; auto-repeat
+                // (browsing by holding) skips it to keep flipping fast.
+                Action::Navigate if fresh_press => {
+                    animate_entrance(&mut lcd, fb, &model);
+                }
+                Action::Navigate | Action::TogglePage => {
+                    ui::render(fb, &model);
+                    lcd.push_frame(fb);
+                }
+                Action::None => {}
             }
         }
 

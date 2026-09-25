@@ -41,6 +41,10 @@ const STAT_COLORS: [Rgb565; 6] = [
     Rgb565::new(0xF8, 0x58, 0x88), // SPE pink
 ];
 
+/// Materialize flash color for the entrance animation (dark shadow on the
+/// white card).
+const SILHOUETTE: Rgb565 = Rgb565::new(0x1A, 0x23, 0x40);
+
 const STAT_LABELS: [&str; 6] = ["HP", "ATK", "DEF", "SPA", "SPD", "SPE"];
 
 fn fill_rect(fb: &mut FrameBuffer, x: i32, y: i32, w: u32, h: u32, color: Rgb565) {
@@ -63,14 +67,26 @@ fn card_at(fb: &mut FrameBuffer, x: i32, y: i32, w: u32, h: u32) {
         .ok();
 }
 
-fn draw_sprite(fb: &mut FrameBuffer, s: &Sprite, x0: u32, y0: u32, scale: u32) {
-    for y in 0..64u32 {
-        for x in 0..64u32 {
-            if s.opaque(x, y) {
-                let color = s.color(x, y);
+fn draw_sprite(
+    fb: &mut FrameBuffer,
+    s: &Sprite,
+    x0: i32,
+    y0: i32,
+    scale: u32,
+    silhouette: Option<Rgb565>,
+) {
+    let scale = scale as i32;
+    for y in 0..64i32 {
+        for x in 0..64i32 {
+            if s.opaque(x as u32, y as u32) {
+                let color = silhouette.unwrap_or_else(|| s.color(x as u32, y as u32));
                 for dy in 0..scale {
                     for dx in 0..scale {
-                        fb.set(x0 + x * scale + dx, y0 + y * scale + dy, color);
+                        let px = x0 + x * scale + dx;
+                        let py = y0 + y * scale + dy;
+                        if px >= 0 && py >= 0 {
+                            fb.set(px as u32, py as u32, color);
+                        }
                     }
                 }
             }
@@ -173,11 +189,19 @@ fn pill_row(fb: &mut FrameBuffer, e: &DexEntry, cx: i32, y: i32, h: u32, pad: i3
     }
 }
 
-fn render_card(fb: &mut FrameBuffer, e: &DexEntry, no: usize) {
+fn render_card(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, silhouette: bool) {
+    fb.clear(BG);
     render_header(fb, no);
 
     card_at(fb, 44, 36, 152, 152);
-    draw_sprite(fb, &Sprite::new(no as u16), 56, 48, 2);
+    draw_sprite(
+        fb,
+        &Sprite::new(no as u16),
+        56,
+        48 + sprite_dy,
+        2,
+        silhouette.then_some(SILHOUETTE),
+    );
 
     text_centered(fb, e.name, 198, 10, white_on(&font::FONT_10X20));
 
@@ -206,11 +230,19 @@ fn render_card(fb: &mut FrameBuffer, e: &DexEntry, no: usize) {
     render_hint_bar(fb);
 }
 
-fn render_detail(fb: &mut FrameBuffer, e: &DexEntry, no: usize) {
+fn render_detail(fb: &mut FrameBuffer, e: &DexEntry, no: usize, sprite_dy: i32, silhouette: bool) {
+    fb.clear(BG);
     render_header(fb, no);
 
     card_at(fb, 12, 38, 68, 68);
-    draw_sprite(fb, &Sprite::new(no as u16), 14, 40, 1);
+    draw_sprite(
+        fb,
+        &Sprite::new(no as u16),
+        14,
+        40 + sprite_dy,
+        1,
+        silhouette.then_some(SILHOUETTE),
+    );
 
     text_top(fb, e.name, 92, 42, white_on(&font::FONT_8X13_BOLD));
     text_top(fb, e.category, 92, 58, colored(&font::FONT_6X12, SUB));
@@ -260,10 +292,22 @@ fn render_detail(fb: &mut FrameBuffer, e: &DexEntry, no: usize) {
 
 /// Full-screen render of the current model state.
 pub fn render(fb: &mut FrameBuffer, model: &DexModel) {
-    fb.clear(BG);
-    let e = &DEX[model.no() - 1];
-    match model.page() {
-        Page::Card => render_card(fb, e, model.no()),
-        Page::Detail => render_detail(fb, e, model.no()),
+    render_anim(fb, &DEX[model.no() - 1], model.no(), 0, false, model.page());
+}
+
+/// Full-screen render with the front sprite shifted vertically by
+/// `sprite_dy` and optionally drawn as a flat silhouette (entrance
+/// animation frames; dy = 0, silhouette = false is the resting state).
+pub fn render_anim(
+    fb: &mut FrameBuffer,
+    e: &DexEntry,
+    no: usize,
+    sprite_dy: i32,
+    silhouette: bool,
+    page: Page,
+) {
+    match page {
+        Page::Card => render_card(fb, e, no, sprite_dy, silhouette),
+        Page::Detail => render_detail(fb, e, no, sprite_dy, silhouette),
     }
 }
