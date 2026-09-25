@@ -2,7 +2,7 @@
 // Source: open-pokefirered (stats/sprites) + PokeAPI zh-Hans
 // (official Chinese names/genera/flavor text).
 pub const DEX_LEN: usize = 386;
-pub const SPRITE_STRIDE: usize = 8704;
+pub const SPRITE_STRIDE: usize = 2080;
 
 /// One species. `types` uses type ids; 255 = none.
 #[allow(dead_code)]

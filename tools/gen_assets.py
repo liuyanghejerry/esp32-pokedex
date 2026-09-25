@@ -9,8 +9,15 @@ Sources (never modified):
   unown_fronts.bin (form 'A' fallback for #201), pokemon_icons.bin (fallback for #360)
 
 Outputs (into this repo only):
-  firmware/assets/sprites.bin   386 x (8192B RGB565 + 512B alpha mask), MSB-first bits
+  firmware/assets/sprites.bin   386 x (16-colour BGR565 palette + 4bpp indices)
   firmware/src/dex_data.rs      Rust static tables for the national dex (1..=386)
+
+Sprites are 4 bits per pixel: index 0 is transparent, 1..=15 index the
+sprite's own palette. GBA front sprites come from 4bpp artwork, so this is
+lossless — the generator asserts that no sprite needs more than 15 opaque
+colours, and that the packed blob decodes back to the source pixels exactly.
+(At 8 KB of RGB565 + 512 B of mask per sprite the blob was 3.4 MB, which did
+not leave room for the cries and BGM in the chip's 8 MB of flash MMU.)
 
 Known data gaps and fallbacks:
   - pokedex_entries.json misses CHIKORITA (#152) and TYRANITAR (#248):
@@ -64,7 +71,8 @@ def rgb565(r: int, g: int, b: int) -> int:
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def to_rgb565_mask(rgba: bytes) -> tuple[bytearray, bytearray]:
+def rgb565_mask_ref(rgba: bytes) -> tuple[bytearray, bytearray]:
+    """Reference (unpacked) encoding, kept only to verify `to_indexed`."""
     px = bytearray(8192)
     mask = bytearray(512)
     for i in range(4096):
@@ -75,6 +83,52 @@ def to_rgb565_mask(rgba: bytes) -> tuple[bytearray, bytearray]:
             px[2 * i + 1] = c & 0xFF
             mask[i >> 3] |= 0x80 >> (i & 7)
     return px, mask
+
+
+def to_indexed(rgba: bytes) -> tuple[bytes, bytes]:
+    """Pack one 64x64 RGBA sprite into (16-colour palette, 4bpp indices).
+
+    Index 0 is transparent and 1..=15 index the palette, which is written as a
+    fixed 16 entries so every sprite has the same stride.
+    """
+    palette: list[int] = []
+    lookup: dict[int, int] = {}
+    idx = bytearray(2048)
+    for i in range(4096):
+        r, g, b, a = rgba[4 * i : 4 * i + 4]
+        v = 0
+        if a:
+            c = rgb565(r, g, b)
+            v = lookup.get(c, 0)
+            if v == 0:
+                v = len(palette) + 1
+                if v > 15:
+                    sys.exit(f"sprite needs more than 15 opaque colours (pixel {i})")
+                lookup[c] = v
+                palette.append(c)
+        idx[i >> 1] |= (v << 4) if (i & 1) == 0 else v
+    # Index 0 is reserved for transparency, so the palette starts at slot 1.
+    pal = bytearray(2)
+    for c in palette:
+        pal += bytes((c >> 8, c & 0xFF))
+    pal += bytes(2 * (15 - len(palette)))
+    return bytes(pal), bytes(idx)
+
+
+def decode_indexed(blob: bytes, base: int) -> tuple[list[int], bytearray, bytearray]:
+    """Inverse of `to_indexed`, used to prove the blob round-trips."""
+    pal = [int.from_bytes(blob[base + 2 * i : base + 2 * i + 2], "big") for i in range(16)]
+    px = bytearray(8192)
+    mask = bytearray(512)
+    for i in range(4096):
+        byte = blob[base + 32 + (i >> 1)]
+        v = (byte >> 4) if (i & 1) == 0 else (byte & 0xF)
+        if v:
+            c = pal[v]
+            px[2 * i] = c >> 8
+            px[2 * i + 1] = c & 0xFF
+            mask[i >> 3] |= 0x80 >> (i & 7)
+    return pal, px, mask
 
 
 def main() -> None:
@@ -131,8 +185,13 @@ def main() -> None:
         else:
             sys.exit(f"missing front sprite for #{no} {name}")
 
-        px, mask = to_rgb565_mask(rgba)
-        sprites += px + mask
+        packed = b"".join(to_indexed(rgba))
+        # Packed form must decode back to exactly the same pixels.
+        _, dec_px, dec_mask = decode_indexed(packed, 0)
+        exp_px, exp_mask = rgb565_mask_ref(rgba)
+        if dec_px != exp_px or dec_mask != exp_mask:
+            sys.exit(f"#{no} {name}: 4bpp packing is not lossless")
+        sprites += packed
 
         zh_rec = zh[str(no)]
         desc = zh_rec["flavor"]
@@ -179,7 +238,7 @@ def main() -> None:
         f.write("// (official Chinese names/genera/flavor text).\n")
         f.write("pub const DEX_LEN: usize = ")
         f.write(f"{DEX_COUNT};\n")
-        f.write("pub const SPRITE_STRIDE: usize = 8704;\n\n")
+        f.write("pub const SPRITE_STRIDE: usize = 2080;\n\n")
         f.write("/// One species. `types` uses type ids; 255 = none.\n")
         f.write("#[allow(dead_code)]\n")
         f.write("pub struct DexEntry {\n")
